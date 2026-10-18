@@ -2,8 +2,6 @@
 
 This document outlines the system architecture and capacity planning for SnapShare, a photo-sharing application handling user uploads and social feed generation.
 
----
-
 ## 1. Assumptions & Baseline Metrics
 
 Using an approximation of $1\text{ day} \approx 100,000\text{ seconds}$ (exact: 86,400 seconds):
@@ -17,8 +15,6 @@ Using an approximation of $1\text{ day} \approx 100,000\text{ seconds}$ (exact: 
   - Original Photo: 2 MB
   - Compressed Thumbnail: 50 KB (0.05 MB)
   - Total Storage per Upload: 2.05 MB
-
----
 
 ## 2. Traffic & Storage Estimates
 
@@ -39,8 +35,6 @@ Using an approximation of $1\text{ day} \approx 100,000\text{ seconds}$ (exact: 
 - **Daily Storage Added:** $1,000,000\text{ uploads} \times 2.05\text{ MB} = 2,050,000\text{ MB} = 2.05\text{ TB/day}$
 - **Yearly Storage Added:** $2.05\text{ TB/day} \times 365\text{ days} =$ **748.25 TB/year** (approximately **750 TB/year**)
 
----
-
 ## 3. Read vs. Write System Characteristics
 
 SnapShare is heavily **read-heavy**, with a read-to-write ratio of **50:1** (50 feed views for every 1 photo upload).
@@ -48,19 +42,14 @@ SnapShare is heavily **read-heavy**, with a read-to-write ratio of **50:1** (50 
 **Design Implications:**
 Because reads vastly outnumber writes, the system must prioritize caching strategies (CDN for media assets, Redis/Memcached for feed data) and database read-replicas to serve high query volumes without bottlenecking primary database writes.
 
----
-
 ## 4. Media Storage Strategy
 
 Photos must **not** be stored directly inside relational databases as BLOBs because large binary files bloat database size, corrupt cache efficiency, slow down database backups/restores, and consume expensive database connections during file transfers.
 
 Instead, raw image files and thumbnails are stored in **Cloud Object Storage** (such as AWS S3 or Google Cloud Storage), while the relational database only stores metadata records containing string URLs/URIs pointing to those stored files.
 
----
-
 ## 5. System Architecture Diagram
 
-```text
                                +-------------------+
                                |    Client App     |
                                +---------+---------+
@@ -85,20 +74,21 @@ Instead, raw image files and thumbnails are stored in **Cloud Object Storage** (
        +----------+    +--------------+    +----------+    +--------------+
        |                              |    |                              |
        v                              v    v                              v
-+--------------+              +------------------+             +------------------+
-| Redis Cache  |              | Object Storage   |             |  Message Queue   |
-+--------------+              |  (Photos/Thumbs) |             +--------+---------+
-       |                      +------------------+                      |
-       v                                                                v
-+--------------+                                               +------------------+
-| Primary DB   |                                               |  Worker Service  |
-|   (Writes)   |                                               |   (Thumbnails)   |
-+------+-------+                                               +------------------+
-       |
-       v
+
++--------------+ +------------------+ +------------------+
+| Redis Cache | | Object Storage | | Message Queue |
++--------------+ | (Photos/Thumbs) | +--------+---------+
+| +------------------+ |
+v v
++--------------+ +------------------+
+| Primary DB | | Worker Service |
+| (Writes) | | (Thumbnails) |
++------+-------+ +------------------+
+|
+v
 +--------------+
 | Read Replica |
-|   (Reads)    |
+| (Reads) |
 +--------------+
 
 ## 6. Component Responsibilities
@@ -121,7 +111,6 @@ Message Queue (RabbitMQ/SQS): Buffers asynchronous tasks like image processing j
 
 Worker Service: Consumes jobs from the message queue in the background to resize uploaded images and write compressed thumbnails back to object storage.
 
-
 ## 7. Step-by-Step Photo Upload Flow
 
 Upload Initiation: The client sends an HTTP POST request containing the image file and user metadata to the Load Balancer, which routes it to an active App Server.
@@ -137,6 +126,7 @@ Background Thumbnail Processing: A Worker Service picks up the job from the Mess
 State & Feed Update: The Worker updates the photo metadata record in the Primary Database (status: "ready", adding the thumbnail URL) and invalidates or appends the new photo ID to relevant follower feed caches in Redis.
 
 ## 8. Architectural Trade-Offs
+
 Asynchronous Processing vs. Real-Time Thumbnail Availability:
 
 Trade-off: Offloading thumbnail generation to a background worker queue ensures fast API upload response times for users, but introduces eventual consistency where a newly uploaded photo's thumbnail might not appear in a follower's feed for a few seconds.
@@ -144,4 +134,3 @@ Trade-off: Offloading thumbnail generation to a background worker queue ensures 
 Push vs. Pull Feed Model (Fan-out on Write vs. Fan-out on Read):
 
 Trade-off: Pre-computing feeds and pushing photo IDs directly into Redis caches upon upload makes feed reads extremely fast (critical for a 50:1 read-heavy system), but significantly increases background write/processing overhead when high-profile users with millions of followers upload a photo.
-```
